@@ -1,118 +1,187 @@
-"""
-    * SPDX-FileCopyrightText: Copyright 2025 LG Electronics Inc.
-    * SPDX-License-Identifier: Apache-2.0
-"""
+from __future__ import annotations
+
+import fnmatch
+import json
 import logging
 import os
-from typing import Final
+from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server import CacheHint, MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.responses import JSONResponse
 from thinqconnect import ThinQApi
+import uvicorn
 
 import thinqconnect_mcp.prompts as prompts
 import thinqconnect_mcp.tools as tools
 
-# Environment Variables
 load_dotenv()
-PAT: Final[str] = os.getenv("THINQ_PAT")
-COUNTRY: Final[str] = os.getenv("THINQ_COUNTRY")
+PAT: str = os.getenv("THINQ_PAT", "")
+COUNTRY: str = os.getenv("THINQ_COUNTRY", "")
+CLIENT_ID: str = "thinqconnect-mcp-client"
+MCP_NAME: str = "thinqconnect-mcp"
 
-# Constants
-CLIENT_ID: Final[str] = "thinqconnect-mcp-client"
-MCP_NAME: Final[str] = "thinqconnect-mcp"
-
-
-# Validation for environment variables
-def validate_config() -> None:
-    if not PAT:
-        raise ValueError("PAT is not configured. Please set the THINQ_PAT environment variable.")
-    if not COUNTRY:
-        raise ValueError("Country code is not configured. Please set the THINQ_COUNTRY environment variable.")
-
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def setup_thinq_api() -> ThinQApi:
-    """Initialize and configure ThinQ API client"""
-    thinq_api = ThinQApi(session=None, access_token=PAT, country_code=COUNTRY, client_id=CLIENT_ID)
-    thinq_api.set_log_level("DEBUG")
-    return thinq_api
+class _CORSMiddleware:
+    def __init__(self, app):
+        self.app = app
+        raw = os.environ.get("ALLOWED_ORIGINS", "https://*.lost.plus")
+        self._allowed = [o.strip() for o in raw.split(",") if o.strip()]
+
+    def _echo_origin(self, origin: str | None) -> str | None:
+        if not origin:
+            return None
+        for pattern in self._allowed:
+            if fnmatch.fnmatch(origin, pattern):
+                return origin
+        return None
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        origin_raw = headers.get(b"origin")
+        origin = origin_raw.decode() if origin_raw else None
+        matched = self._echo_origin(origin)
+
+        if scope["method"] == "OPTIONS":
+            resp_headers = [
+                (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
+                (b"access-control-allow-headers", b"authorization, content-type, accept, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, mcp-param-*, last-event-id, x-api-key"),
+                (b"access-control-expose-headers", b"mcp-session-id, mcp-protocol-version, content-type"),
+            ]
+            if matched:
+                resp_headers.insert(0, (b"access-control-allow-origin", matched.encode()))
+            elif origin:
+                resp_headers.insert(0, (b"access-control-allow-origin", origin.encode()))
+            await send({"type": "http.response.start", "status": 204, "headers": resp_headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_with_cors(message):
+            if message["type"] == "http.response.start":
+                hlist = list(message.get("headers", []))
+                if matched:
+                    hlist.append((b"access-control-allow-origin", matched.encode()))
+                elif origin:
+                    hlist.append((b"access-control-allow-origin", origin.encode()))
+                hlist.append((b"access-control-expose-headers", b"mcp-session-id, mcp-protocol-version, content-type"))
+                hlist.append((b"vary", b"Origin"))
+                message["headers"] = hlist
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors)
 
 
-def setup_mcp() -> FastMCP:
-    """Initialize and configure MCP server"""
-    return FastMCP(name=MCP_NAME)
+class _AuthMiddleware:
+    def __init__(self, app, tokens: list[str] | None):
+        self.app = app
+        self._tokens = set(tokens) if tokens else None
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or self._tokens is None:
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path == "/healthz":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
+        if auth_header.startswith("Bearer ") and auth_header[7:] in self._tokens:
+            await self.app(scope, receive, send)
+            return
+
+        token_values = parse_qs(scope.get("query_string", b"").decode()).get("token", [])
+        if self._tokens & set(token_values):
+            await self.app(scope, receive, send)
+            return
+
+        first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
+        if first_segment in self._tokens:
+            scope["path"] = "/" + "/".join(path.strip("/").split("/")[1:])
+            await self.app(scope, receive, send)
+            return
+
+        await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": b'{"error":"Unauthorized"}'})
 
 
-# Initialize MCP and API
-validate_config()
-mcp = setup_mcp()
-thinq_api = setup_thinq_api()
+def _build_transport_security() -> TransportSecuritySettings:
+    return TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 
-# Prompt handlers
+if not PAT:
+    raise ValueError("THINQ_PAT is not configured")
+if not COUNTRY:
+    raise ValueError("THINQ_COUNTRY is not configured")
+
+thinq_api = ThinQApi(session=None, access_token=PAT, country_code=COUNTRY, client_id=CLIENT_ID)
+thinq_api.set_log_level("DEBUG")
+
+mcp = MCPServer(
+    MCP_NAME,
+    version="0.0.5",
+    cache_hints={
+        "server/discover": CacheHint(ttl_ms=300_000, scope="public"),
+        "prompts/list": CacheHint(ttl_ms=300_000, scope="public"),
+        "tools/list": CacheHint(ttl_ms=300_000, scope="private"),
+    },
+)
+
+
 @mcp.prompt("I want to know how to use the ThinQ Connect MCP Server")
 async def welcome_prompt() -> str:
     return prompts.welcome_prompt()
 
 
-# Tool handlers
-@mcp.tool(
-    description="""Retrieves a list of all devices connected to the ThinQ Connect platform
+@mcp.tool(description="""Retrieves a list of all devices connected to the ThinQ Connect platform
     Args:
         None
-
     Returns:
         String containing connected device list information
-    """
-)
+    """)
 async def get_device_list() -> str:
     return await tools.get_device_list(thinq_api=thinq_api)
 
 
-@mcp.tool(
-    description="""Retrieves available control commands and parameter information for a specific device
+@mcp.tool(description="""Retrieves available control commands and parameter information for a specific device
     Args:
         device_type: Device type (e.g., DEVICE_AIR_CONDITIONER, DEVICE_ROBOT_CLEANER, DEVICE_STYLER)
         device_id: Unique ID of the device to query
-
     Returns:
         String containing device control commands and parameter information
-    """
-)
+    """)
 async def get_device_available_controls(device_type: str, device_id: str) -> str:
     return await tools.get_device_available_controls(thinq_api=thinq_api, device_type=device_type, device_id=device_id)
 
 
-@mcp.tool(
-    description="""Retrieves status information for a specific device
+@mcp.tool(description="""Retrieves status information for a specific device
     Args:
         device_id: Unique ID of the device to query
-
     Returns:
         String containing device status information
-    """
-)
+    """)
 async def get_device_status(device_id: str) -> str:
     return await tools.get_device_status(thinq_api=thinq_api, device_id=device_id)
 
 
-@mcp.tool(
-    description="""Send control commands to a specific device on the ThinQ Connect platform to change its settings or state
+@mcp.tool(description="""Send control commands to a specific device on the ThinQ Connect platform to change its settings or state
     Args:
         device_type: Device type (e.g., DEVICE_AIR_CONDITIONER, DEVICE_ROBOT_CLEANER, DEVICE_STYLER)
         device_id: Unique ID of the device to control
-        control_method: Co ntrol method name to execute (e.g., set_air_con_operation_mode, set_target_temperature, set_wind_strength)
+        control_method: Control method name to execute (e.g., set_air_con_operation_mode, set_target_temperature, set_wind_strength)
         control_params: Parameter dictionary to pass to the control method (e.g., {'operation': 'POWER_OFF'}, {'temperature': 25}, {'wind_strength': 'HIGH'})
-
     Returns:
         String containing device control result message
-    """
-)
+    """)
 async def post_device_control(
     device_type: str,
     device_id: str,
@@ -128,10 +197,60 @@ async def post_device_control(
     )
 
 
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def root_route(request):
+    del request
+    return JSONResponse({"name": MCP_NAME, "mcp_path": "/mcp", "healthz": "/healthz"})
+
+
+@mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
+async def health_route(request):
+    del request
+    return JSONResponse({"ok": True})
+
+
+def _build_app():
+    raw_tokens = os.environ.get("THINQ_AUTH_TOKEN")
+    auth_tokens: list[str] | None = None
+    if raw_tokens:
+        auth_tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
+    inner = _AuthMiddleware(
+        mcp.streamable_http_app(
+            streamable_http_path="/mcp",
+            json_response=True,
+            stateless_http=True,
+            host=os.environ.get("HOST", "0.0.0.0"),
+            transport_security=_build_transport_security(),
+        ),
+        auth_tokens,
+    )
+    return _CORSMiddleware(inner)
+
+
+_cors_auth_app = _build_app()
+
+
+async def app(scope, receive, send):
+    if scope["type"] == "http":
+        path = scope.get("path", "")
+        if scope["method"] == "POST":
+            if path.rstrip("/") == "":
+                scope["path"] = "/mcp"
+            elif path != "/mcp" and path.rstrip("/") == "/mcp":
+                scope["path"] = "/mcp"
+    await _cors_auth_app(scope, receive, send)
+
+
 def main() -> None:
-    """Main entry point of the application"""
-    try:
-        mcp.run()
-    except Exception as e:
-        logger.error(f"Application error: {str(e)}")
-        raise
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    uvicorn.run(
+        app,
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8000")),
+        forwarded_allow_ips="*",
+        proxy_headers=True,
+    )
+
+
+if __name__ == "__main__":
+    main()

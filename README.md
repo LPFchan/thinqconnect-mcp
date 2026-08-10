@@ -5,6 +5,11 @@
 This is the official MCP (Model Context Protocol) server for LG ThinQ devices.
 This server provides integrated control capabilities including status monitoring, device control, and profile information for various LG ThinQ devices, built on the LG ThinQ API and Python Open SDK. MCP connection method is stdio.
 
+The HTTP deployment uses the official MCP Python SDK v2 and supports the
+`2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
+fallback for clients that still use `initialize`. Stdio remains available for
+local clients.
+
 ![ThinQ Connect MCP Demo](demo.gif)
 
 ## Table of Contents
