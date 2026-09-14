@@ -10,6 +10,12 @@ The HTTP deployment uses the official MCP Python SDK v2 and supports the
 fallback for clients that still use `initialize`. Stdio remains available for
 local clients.
 
+The production HTTP endpoint is `https://thinq.lost.plus/mcp`. The shared
+Common Auth gateway protects it with the `thinqconnect` scope. Send a Common
+Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`. The HTTP
+backend does not authenticate requests itself and must remain bound to localhost
+behind the gateway. Stdio clients are unaffected.
+
 ![ThinQ Connect MCP Demo](demo.gif)
 
 ## Table of Contents

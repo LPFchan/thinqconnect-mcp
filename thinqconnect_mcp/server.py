@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 import os
-from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
 from mcp.server import CacheHint, MCPServer
@@ -76,42 +74,6 @@ class _CORSMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_cors)
-
-
-class _AuthMiddleware:
-    def __init__(self, app, tokens: list[str] | None):
-        self.app = app
-        self._tokens = set(tokens) if tokens else None
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or self._tokens is None:
-            await self.app(scope, receive, send)
-            return
-
-        path = scope.get("path", "")
-        if path == "/healthz":
-            await self.app(scope, receive, send)
-            return
-
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
-        if auth_header.startswith("Bearer ") and auth_header[7:] in self._tokens:
-            await self.app(scope, receive, send)
-            return
-
-        token_values = parse_qs(scope.get("query_string", b"").decode()).get("token", [])
-        if self._tokens & set(token_values):
-            await self.app(scope, receive, send)
-            return
-
-        first_segment = path.strip("/").split("/")[0] if path.strip("/") else ""
-        if first_segment in self._tokens:
-            scope["path"] = "/" + "/".join(path.strip("/").split("/")[1:])
-            await self.app(scope, receive, send)
-            return
-
-        await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body", "body": b'{"error":"Unauthorized"}'})
 
 
 def _build_transport_security() -> TransportSecuritySettings:
@@ -210,24 +172,17 @@ async def health_route(request):
 
 
 def _build_app():
-    raw_tokens = os.environ.get("THINQ_AUTH_TOKEN")
-    auth_tokens: list[str] | None = None
-    if raw_tokens:
-        auth_tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
-    inner = _AuthMiddleware(
-        mcp.streamable_http_app(
-            streamable_http_path="/mcp",
-            json_response=True,
-            stateless_http=True,
-            host=os.environ.get("HOST", "0.0.0.0"),
-            transport_security=_build_transport_security(),
-        ),
-        auth_tokens,
+    inner = mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        host=os.environ.get("HOST", "0.0.0.0"),
+        transport_security=_build_transport_security(),
     )
     return _CORSMiddleware(inner)
 
 
-_cors_auth_app = _build_app()
+_http_app = _build_app()
 
 
 async def app(scope, receive, send):
@@ -238,7 +193,7 @@ async def app(scope, receive, send):
                 scope["path"] = "/mcp"
             elif path != "/mcp" and path.rstrip("/") == "/mcp":
                 scope["path"] = "/mcp"
-    await _cors_auth_app(scope, receive, send)
+    await _http_app(scope, receive, send)
 
 
 def main() -> None:
