@@ -1,10 +1,9 @@
+import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+
 // thinqconnect Worker: MCP server on Cloudflare Workers, port of the
 // Python thinqconnect-mcp (LG ThinQ Connect OpenAPI). Authenticates machine
 // tokens and OAuth tokens directly against Common Auth instead of the
 // loopback gateway.
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 
 export interface Env {
@@ -172,88 +171,64 @@ const WELCOME_PROMPT = [
 function buildServer(env: Env): McpServer {
   const server = new McpServer({ name: "thinqconnect-mcp", version: "0.2.0" });
 
-  server.tool(
-    "get_device_list",
-    "Get the list of all ThinQ devices registered to the account, with device ID, name, type, and model.",
-    {},
-    async () => {
-      try {
-        const devices = (await getDeviceList(env)) as any[];
-        const list = Array.isArray(devices) ? devices : [];
-        const info = list.map((d: any) =>
-          "Device ID: " + d.deviceId + "\n" +
-          "Device Name: " + d.deviceInfo?.alias + "\n" +
-          "Device Type: " + d.deviceInfo?.deviceType + "\n" +
-          "Model Name: " + d.deviceInfo?.modelName + "\n"
-        );
-        return text("Found " + list.length + " devices:\n\n" + info.join("\n"));
-      } catch (e) {
-        return text("An error occurred while retrieving device list: " + String(e));
-      }
-    },
-  );
+  server.registerTool("get_device_list", { description: "Get the list of all ThinQ devices registered to the account, with device ID, name, type, and model.", inputSchema: z.object({}) }, async () => {
+              try {
+                const devices = (await getDeviceList(env)) as any[];
+                const list = Array.isArray(devices) ? devices : [];
+                const info = list.map((d: any) =>
+                  "Device ID: " + d.deviceId + "\n" +
+                  "Device Name: " + d.deviceInfo?.alias + "\n" +
+                  "Device Type: " + d.deviceInfo?.deviceType + "\n" +
+                  "Model Name: " + d.deviceInfo?.modelName + "\n"
+                );
+                return text("Found " + list.length + " devices:\n\n" + info.join("\n"));
+              } catch (e) {
+                return text("An error occurred while retrieving device list: " + String(e));
+              }
+            });
 
-  server.tool(
-    "get_device_available_controls",
-    "Get the profile and controllable (writable) properties of a device. Use this before post_device_control to learn which properties exist.",
-    { device_type: z.string().describe("Device type, e.g. DEVICE_AIR_CONDITIONER"),
-      device_id: z.string().describe("Device ID from get_device_list") },
-    async ({ device_type, device_id }) => {
-      try {
-        const profile = await getDeviceProfile(env, device_id);
-        return text(
-          "# Device Profile for " + device_type + " (" + device_id + ")\n\n" +
-          "The profile below lists this device's properties. Writable properties are the ones " +
-          "you may pass to post_device_control (convert snake_case to camelCase).\n\n" +
-          JSON.stringify(profile, null, 2)
-        );
-      } catch (e) {
-        return text("An error occurred while retrieving device details: " + String(e));
-      }
-    },
-  );
+  server.registerTool("get_device_available_controls", { description: "Get the profile and controllable (writable) properties of a device. Use this before post_device_control to learn which properties exist.", inputSchema: z.object({ device_type: z.string().describe("Device type, e.g. DEVICE_AIR_CONDITIONER"),
+              device_id: z.string().describe("Device ID from get_device_list") }) }, async ({ device_type, device_id }) => {
+              try {
+                const profile = await getDeviceProfile(env, device_id);
+                return text(
+                  "# Device Profile for " + device_type + " (" + device_id + ")\n\n" +
+                  "The profile below lists this device's properties. Writable properties are the ones " +
+                  "you may pass to post_device_control (convert snake_case to camelCase).\n\n" +
+                  JSON.stringify(profile, null, 2)
+                );
+              } catch (e) {
+                return text("An error occurred while retrieving device details: " + String(e));
+              }
+            });
 
-  server.tool(
-    "post_device_control",
-    "Control a device by setting properties. control_params keys are property names (snake_case or camelCase); they are sent to the ThinQ API as camelCase.",
-    { device_type: z.string().describe("Device type, e.g. DEVICE_AIR_CONDITIONER"),
-      device_id: z.string().describe("Device ID from get_device_list"),
-      control_method: z.string().describe("Informative name of the control, e.g. set_air_con_operation_mode"),
-      control_params: z.record(z.any()).describe("Property key/value pairs to set") },
-    async ({ device_type, device_id, control_method, control_params }) => {
-      try {
-        const camel: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(control_params ?? {})) camel[toCamel(k)] = v;
-        await postDeviceControl(env, device_id, camel);
-        return text("Device control completed. Command: " + control_method +
-          ", Parameters: " + JSON.stringify(control_params));
-      } catch (e) {
-        return text("An error occurred during device control: " + String(e) +
-          ", Command: " + control_method + ", Parameters: " + JSON.stringify(control_params));
-      }
-    },
-  );
+  server.registerTool("post_device_control", { description: "Control a device by setting properties. control_params keys are property names (snake_case or camelCase); they are sent to the ThinQ API as camelCase.", inputSchema: z.object({ device_type: z.string().describe("Device type, e.g. DEVICE_AIR_CONDITIONER"),
+              device_id: z.string().describe("Device ID from get_device_list"),
+              control_method: z.string().describe("Informative name of the control, e.g. set_air_con_operation_mode"),
+              control_params: z.record(z.string(), z.any()).describe("Property key/value pairs to set") }) }, async ({ device_type, device_id, control_method, control_params }) => {
+              try {
+                const camel: Record<string, unknown> = {};
+                for (const [k, v] of Object.entries(control_params ?? {})) camel[toCamel(k)] = v;
+                await postDeviceControl(env, device_id, camel);
+                return text("Device control completed. Command: " + control_method +
+                  ", Parameters: " + JSON.stringify(control_params));
+              } catch (e) {
+                return text("An error occurred during device control: " + String(e) +
+                  ", Command: " + control_method + ", Parameters: " + JSON.stringify(control_params));
+              }
+            });
 
-  server.tool(
-    "get_device_status",
-    "Retrieve the current status of a specific device.",
-    { device_id: z.string().describe("Device ID from get_device_list") },
-    async ({ device_id }) => {
-      try {
-        const status = await getDeviceStatus(env, device_id);
-        return text("Device status information is as follows.\n## Status Information\n" +
-          JSON.stringify(status, null, 2));
-      } catch (e) {
-        return text("An error occurred while retrieving device status: " + String(e));
-      }
-    },
-  );
+  server.registerTool("get_device_status", { description: "Retrieve the current status of a specific device.", inputSchema: z.object({ device_id: z.string().describe("Device ID from get_device_list") }) }, async ({ device_id }) => {
+              try {
+                const status = await getDeviceStatus(env, device_id);
+                return text("Device status information is as follows.\n## Status Information\n" +
+                  JSON.stringify(status, null, 2));
+              } catch (e) {
+                return text("An error occurred while retrieving device status: " + String(e));
+              }
+            });
 
-  server.prompt(
-    "welcome",
-    "I want to know how to use the ThinQ Connect MCP Server",
-    () => ({ messages: [{ role: "user", content: { type: "text", text: WELCOME_PROMPT } }] }),
-  );
+  server.registerPrompt("welcome", { description: "I want to know how to use the ThinQ Connect MCP Server" }, () => ({ messages: [{ role: "user", content: { type: "text", text: WELCOME_PROMPT } }] }));
 
   return server;
 }
