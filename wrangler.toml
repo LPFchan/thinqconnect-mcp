@@ -1,0 +1,19 @@
+name = "thinqconnect"
+main = "index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+AUTH_URL = "https://auth.lost.plus"
+TOKEN_SCOPE = "thinqconnect"
+THINQ_COUNTRY = "KR"
+
+# Secret (set with: npx wrangler secret put THINQ_PAT):
+#   THINQ_PAT - LG ThinQ personal access token
+
+routes = [
+  { pattern = "thinq.lost.plus/mcp", zone_name = "lost.plus" },
+  { pattern = "thinq.lost.plus/mcp/*", zone_name = "lost.plus" },
+  { pattern = "thinq.lost.plus/healthz", zone_name = "lost.plus" },
+  { pattern = "thinq.lost.plus/.well-known/oauth-protected-resource*", zone_name = "lost.plus" },
+]

@@ -2,8 +2,42 @@
 
 
 # ThinQ Connect MCP Server (Beta)
-This is the official MCP (Model Context Protocol) server for LG ThinQ devices.
-This server provides integrated control capabilities including status monitoring, device control, and profile information for various LG ThinQ devices, built on the LG ThinQ API and Python Open SDK. MCP connection method is stdio.
+This MCP server controls LG ThinQ devices — status monitoring, device
+control, and profile queries — via the LG ThinQ Connect Open API.
+
+## Deployment: Cloudflare Worker (primary)
+
+The primary deployment is a Cloudflare Worker (`index.ts`), so the MCP
+endpoint stays up even when the OCI box is down. The Worker authenticates
+machine tokens and OAuth tokens directly against Common Auth
+(`https://auth.lost.plus`) with the `thinqconnect` scope, and calls the
+ThinQ Open API over HTTPS — no Python SDK in the request path.
+
+Deploy:
+
+```bash
+npm install
+npx wrangler secret put THINQ_PAT   # LG ThinQ personal access token (secret, never in git)
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy \
+  --route 'thinq.lost.plus/mcp' --route 'thinq.lost.plus/mcp/*' \
+  --route 'thinq.lost.plus/healthz' \
+  --route 'thinq.lost.plus/.well-known/oauth-protected-resource*'
+```
+
+(The explicit `--route` flags are deliberate: wrangler 3.x ignores the
+`routes` table in `wrangler.toml` on deploy, so routes are passed on the
+command line. The table stays in the file as documentation.)
+
+Configuration in `wrangler.toml`: `AUTH_URL`, `TOKEN_SCOPE`,
+`THINQ_COUNTRY` (e.g. `KR`). `THINQ_PAT` is a wrangler **secret** —
+never commit it.
+
+## Local development: Python server
+
+The original Python server (built on the LG ThinQ API and Python Open SDK)
+lives under `python/` and remains available for local development and as a
+fallback. MCP connection method for the Python server is stdio or HTTP. See
+`python/` for `pyproject.toml` and the server sources.
 
 The HTTP deployment uses the official MCP Python SDK v2 and supports the
 `2026-07-28` stateless protocol via `server/discover`, with a stateless legacy
