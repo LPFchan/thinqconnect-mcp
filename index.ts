@@ -91,13 +91,23 @@ const COUNTRY_TO_REGION: Record<string, string> = {
   GB: "eic", DE: "eic", FR: "eic", IT: "eic", ES: "eic",
 };
 
+// The ThinQ Open API requires this public x-api-key header on every call —
+// it's hardcoded in the official thinqconnect SDK (const.py), not a secret.
+const THINQ_API_KEY = "v6GFvkweNo7DK7yD3ylIZ9w52aKBU0eJ7wLXkSR3";
+const THINQ_CLIENT_ID = "thinqconnect-mcp-client";
+
 function thinqBaseUrl(country: string): string {
   const region = COUNTRY_TO_REGION[country.toUpperCase()] ?? "kic";
   return "https://api-" + region + ".lgthinq.com";
 }
 
 function messageId(): string {
-  return crypto.randomUUID().replaceAll("-", "");
+  // SDK format: url-safe base64 of 16 random bytes, padding stripped.
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 async function thinqRequest(env: Env, method: string, endpoint: string, body?: unknown): Promise<any> {
@@ -108,6 +118,8 @@ async function thinqRequest(env: Env, method: string, endpoint: string, body?: u
       authorization: "Bearer " + env.THINQ_PAT,
       "x-country": env.THINQ_COUNTRY,
       "x-message-id": messageId(),
+      "x-client-id": THINQ_CLIENT_ID,
+      "x-api-key": THINQ_API_KEY,
       "x-service-phase": "OP",
       "x-conditional-control": "true",
       "content-type": "application/json",
