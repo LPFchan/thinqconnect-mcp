@@ -1,7 +1,5 @@
 node_modules/
 .wrangler/
+.dev.vars
 .env
 dist/
-__pycache__/
-.venv/
-.pytest_cache/
