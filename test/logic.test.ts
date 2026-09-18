@@ -6,17 +6,12 @@ import {
   formatDeviceStatus,
   messageId,
   thinqBaseUrl,
-  toCamel,
   unwrapThinqResponse,
 } from "../index";
 
-// Parity suite. The fixtures and golden files below are shared verbatim with
-// python/tests/test_parity.py — both implementations are asserted against the
-// same expected bytes, so drift on either side fails on both sides.
-//
-// Only get_device_list and get_device_status are covered here. The other two
-// tools intentionally do NOT match the Python server; see "Worker/Python
-// divergences" in README.md.
+// Formatter parity with the retired Python server. The golden files under
+// fixtures/expected/ were produced by its formatting module; the Worker's
+// output is held to the same bytes.
 
 const fixture = (name: string) =>
   readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)), "utf-8");
@@ -53,8 +48,7 @@ describe("formatDeviceStatus", () => {
   });
 });
 
-// Behavior the two ports do not share. Asserted so it stays visible.
-// The matching assertions live in python/tests/test_parity.py.
+// Where the Worker's output knowingly differs from the Python server's.
 describe("known divergences from the Python server", () => {
   it("drops the decimal point on whole-number floats", () => {
     // Python emits 23.0 here; JSON.stringify emits 23.
@@ -81,23 +75,14 @@ describe("thinqBaseUrl", () => {
     expect(thinqBaseUrl("kr")).toBe(thinqBaseUrl("KR"));
   });
 
-  it("falls back to the Korea region for unknown countries", () => {
-    expect(thinqBaseUrl("ZZ")).toBe("https://api-kic.lgthinq.com");
-  });
-});
-
-describe("toCamel", () => {
-  it("converts snake_case property names", () => {
-    expect(toCamel("air_con_operation_mode")).toBe("airConOperationMode");
-    expect(toCamel("cool_target_temperature")).toBe("coolTargetTemperature");
+  it("refuses an unsupported country, as the SDK does, instead of guessing a region", () => {
+    expect(() => thinqBaseUrl("ZZ")).toThrow("Not supported country_code: ZZ");
   });
 
-  it("leaves camelCase untouched", () => {
-    expect(toCamel("airConOperationMode")).toBe("airConOperationMode");
-  });
-
-  it("handles digits after the underscore", () => {
-    expect(toCamel("pm_2_5")).toBe("pm25");
+  it("covers the SDK's whole table, not a handful of countries", () => {
+    expect(thinqBaseUrl("VN")).toBe("https://api-kic.lgthinq.com");
+    expect(thinqBaseUrl("BR")).toBe("https://api-aic.lgthinq.com");
+    expect(thinqBaseUrl("ZA")).toBe("https://api-eic.lgthinq.com");
   });
 });
 
