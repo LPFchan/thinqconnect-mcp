@@ -1,83 +1,22 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 
 // thinqconnect Worker: MCP server on Cloudflare Workers, port of the
-// Python thinqconnect-mcp (LG ThinQ Connect OpenAPI). Authenticates machine
-// tokens and OAuth tokens directly against Common Auth instead of the
-// loopback gateway.
+// Python thinqconnect-mcp (LG ThinQ Connect OpenAPI).
+//
+// A route-less backend behind the gateway Worker. It authenticates nobody:
+// the gateway has already asked auth.lost.plus who the caller is, and hands
+// the answer over in x-lost-plus-* headers. See identity.ts, and the routes
+// comment in wrangler.toml for why this Worker holds no route of its own.
+//
+// THINQ_PAT is unaffected by the cutover. It is this service's credential to
+// LG, not a caller's credential to this service, and it stays a secret on
+// this Worker.
 import { z } from "zod";
+import { identityFrom } from "./identity";
 
 export interface Env {
-  AUTH_URL: string;
-  TOKEN_SCOPE: string;
   THINQ_PAT: string; // wrangler secret
   THINQ_COUNTRY: string; // e.g. "KR"
-}
-
-// --- auth (same pattern as tweet-fetch-mcp Worker) ---------------------------
-
-interface Identity {
-  sub: string;
-  email: string;
-  name: string;
-  role: string;
-  services?: string[];
-}
-
-// Validate a credential against Common Auth. Two token types:
-//   - machine tokens: GET /api/whoami?service=<scope>
-//   - OAuth access tokens: GET /api/oauth/introspect?resource=<resource>&scope=<scope>
-async function validateToken(env: Env, token: string, requestUrl: string): Promise<Identity | null> {
-  const resource = new URL(requestUrl).origin + "/mcp";
-
-  try {
-    const url = new URL("/api/whoami", env.AUTH_URL);
-    url.searchParams.set("service", env.TOKEN_SCOPE);
-    const resp = await fetch(url.toString(), {
-      headers: { authorization: "Bearer " + token },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (resp.ok) {
-      const identity = (await resp.json()) as Identity;
-      if (identity.sub && identity.email && identity.name &&
-          (identity.role === "administrator" || identity.role === "user")) {
-        return identity;
-      }
-    }
-  } catch { /* fall through to introspect */ }
-
-  try {
-    const url = new URL("/api/oauth/introspect", env.AUTH_URL);
-    url.searchParams.set("resource", resource);
-    url.searchParams.set("scope", env.TOKEN_SCOPE);
-    const resp = await fetch(url.toString(), {
-      headers: { authorization: "Bearer " + token },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (resp.ok) {
-      const identity = (await resp.json()) as Identity;
-      if (identity.sub && identity.email && identity.name &&
-          (identity.role === "administrator" || identity.role === "user")) {
-        return identity;
-      }
-    }
-  } catch { /* reject */ }
-
-  return null;
-}
-
-function extractToken(request: Request): string | null {
-  const auth = request.headers.get("authorization");
-  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-  const apiKey = request.headers.get("x-api-key");
-  if (apiKey) return apiKey.trim();
-  return null;
-}
-
-// MCP OAuth 2.0 Protected Resource Metadata discovery header.
-function wwwAuthenticate(request: Request, scope: string): string {
-  const url = new URL(request.url);
-  const metadata = url.origin + "/.well-known/oauth-protected-resource/mcp";
-  return 'Bearer realm="auth.lost.plus", resource_metadata="' + metadata + '", scope="' + scope + '", error="invalid_token"';
 }
 
 // --- ThinQ Connect OpenAPI ----------------------------------------------------
@@ -256,87 +195,70 @@ function buildServer(env: Env): McpServer {
   return server;
 }
 
-// --- CORS ---------------------------------------------------------------------
-
-function corsHeaders(origin: string | null): Record<string, string> {
-  const h: Record<string, string> = {
-    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-    "access-control-allow-headers":
-      "authorization, content-type, accept, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, last-event-id, x-api-key",
-    "access-control-max-age": "86400",
-    "access-control-expose-headers": "mcp-session-id, mcp-protocol-version, content-type",
-  };
-  if (origin) h["access-control-allow-origin"] = origin;
-  return h;
-}
-
 // --- entry --------------------------------------------------------------------
+
+/**
+ * No identity headers, so no service.
+ *
+ * The only way to reach this Worker is through a service binding declared by
+ * another Worker in the account, and the only Worker that declares one is the
+ * gateway, which never forwards a request it has not authorized. So arriving
+ * here without an identity means the deployment is wrong -- the gateway's
+ * route for this host lost its `mcp` policy, or something else in the account
+ * bound to this Worker directly.
+ *
+ * 500 rather than 401, because it is true. A 401 would tell the caller to
+ * authenticate, and the caller may well have done so correctly; the fault is
+ * on this side of the binding. Serving the tools anyway is the specific
+ * failure the whole gateway arrangement exists to prevent, so this refuses.
+ *
+ * It matters more here than on the other MCP backends: these tools actuate
+ * physical appliances, so an unauthenticated request that reached the tools
+ * would not merely read data.
+ */
+function refused(): Response {
+  return Response.json(
+    { error: "no gateway identity", detail: "this service is only reachable through the gateway" },
+    { status: 500 },
+  );
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Before routing, not after. There is no path here that serves without an
+    // identity, so there is no reason for one to be reachable before the check.
+    const identity = identityFrom(request.headers);
+    if (identity === null) return refused();
+
     const url = new URL(request.url);
-    const origin = request.headers.get("origin");
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
-    }
-
-    if (url.pathname === "/healthz") {
-      return Response.json({ ok: true }, { headers: corsHeaders(origin) });
-    }
-
-    if (url.pathname === "/.well-known/oauth-protected-resource/mcp" ||
-        url.pathname === "/.well-known/oauth-protected-resource") {
-      return Response.json(
-        {
-          authorization_servers: ["https://auth.lost.plus"],
-          bearer_methods_supported: ["header"],
-          resource: url.origin + "/mcp",
-          scopes_supported: [env.TOKEN_SCOPE],
-        },
-        { headers: { ...corsHeaders(origin), "cache-control": "no-store" } },
-      );
-    }
-
+    // /healthz and /.well-known/oauth-protected-resource are gone from here.
+    // The gateway answers both now, which is why healthz changed shape: `ok`
+    // as text/plain rather than `{"ok":true}` as JSON. Anything checking the
+    // body rather than the status needs updating.
     if (url.pathname === "/" || url.pathname === "") {
-      return Response.json(
-        {
-          name: "thinqconnect-mcp",
-          runtime: "cloudflare-workers",
-          mcp_path: "/mcp",
-          healthz: "/healthz",
-          tools: ["get_device_list", "get_device_available_controls", "post_device_control", "get_device_status"],
-        },
-        { headers: corsHeaders(origin) },
-      );
+      return Response.json({
+        name: "thinqconnect-mcp",
+        runtime: "cloudflare-workers",
+        mcp_path: "/mcp",
+        caller: { sub: identity.sub, email: identity.email, name: identity.name, role: identity.role },
+        tools: ["get_device_list", "get_device_available_controls", "post_device_control", "get_device_status"],
+      });
     }
 
+    // `/mcp/*` as well as `/mcp`, which this service accepted before the
+    // cutover and keeps accepting. The gateway's route for this host has no
+    // path_prefix, so both arrive here.
     if (url.pathname !== "/mcp" && !url.pathname.startsWith("/mcp/")) {
-      return new Response("not found", { status: 404, headers: corsHeaders(origin) });
+      return new Response("not found", { status: 404 });
     }
 
-    const token = extractToken(request);
-    if (!token) {
-      return new Response(JSON.stringify({ error: "authentication required" }), {
-        status: 401,
-        headers: { ...corsHeaders(origin), "content-type": "application/json", "www-authenticate": wwwAuthenticate(request, env.TOKEN_SCOPE) },
-      });
-    }
-    const identity = await validateToken(env, token, request.url);
-    if (!identity) {
-      return new Response(JSON.stringify({ error: "authentication required" }), {
-        status: 401,
-        headers: { ...corsHeaders(origin), "content-type": "application/json", "www-authenticate": wwwAuthenticate(request, env.TOKEN_SCOPE) },
-      });
-    }
-
+    // CORS is the gateway's now: under the `mcp` policy it strips
+    // access-control-allow-origin and -expose-headers from whatever the
+    // backend returns and sets its own (gateway src/responseRewrite.ts).
     const server = buildServer(env);
     const transport = new WebStandardStreamableHTTPServerTransport();
     await server.connect(transport);
-    const response = await transport.handleRequest(request);
-    const headers = new Headers(response.headers);
-    for (const [k, v] of Object.entries(corsHeaders(origin))) headers.set(k, v);
-    headers.set("vary", "Origin");
-    return new Response(response.body, { status: response.status, headers });
+    return transport.handleRequest(request);
   },
 };
