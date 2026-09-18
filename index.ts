@@ -95,12 +95,19 @@ const COUNTRY_TO_REGION: Record<string, string> = {
 const THINQ_API_KEY = "v6GFvkweNo7DK7yD3ylIZ9w52aKBU0eJ7wLXkSR3";
 const THINQ_CLIENT_ID = "thinqconnect-mcp-client";
 
-function thinqBaseUrl(country: string): string {
+export function thinqBaseUrl(country: string): string {
   const region = COUNTRY_TO_REGION[country.toUpperCase()] ?? "kic";
   return "https://api-" + region + ".lgthinq.com";
 }
 
-function messageId(): string {
+// ThinQ wraps most endpoints in { response: ... }; a few return the body bare.
+export function unwrapThinqResponse(data: unknown): unknown {
+  return data && typeof data === "object" && "response" in (data as object)
+    ? (data as any).response
+    : data;
+}
+
+export function messageId(): string {
   // SDK format: url-safe base64 of 16 random bytes, padding stripped.
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -127,9 +134,7 @@ async function thinqRequest(env: Env, method: string, endpoint: string, body?: u
     signal: AbortSignal.timeout(15000),
   });
   if (!resp.ok) throw new Error("ThinQ API HTTP " + resp.status + " for " + endpoint);
-  const data = (await resp.json()) as any;
-  // ThinQ wraps responses in { response: ... } for most endpoints.
-  return data && typeof data === "object" && "response" in data ? data.response : data;
+  return unwrapThinqResponse(await resp.json());
 }
 
 const getDeviceList = (env: Env) => thinqRequest(env, "GET", "devices");
@@ -139,8 +144,34 @@ const postDeviceControl = (env: Env, id: string, payload: unknown) =>
   thinqRequest(env, "POST", "devices/" + id + "/control", payload);
 
 // snake_case -> camelCase (ThinQ control payload keys are camelCase).
-function toCamel(s: string): string {
+export function toCamel(s: string): string {
   return s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+// --- output formatters --------------------------------------------------------
+// These mirror python/thinqconnect_mcp/formatting.py byte for byte. Both sides
+// are checked against the shared golden files in test/fixtures/expected/, so a
+// change here without the matching change there fails both test suites.
+
+export function formatDeviceList(devices: unknown): string {
+  const list = Array.isArray(devices) ? devices : [];
+  const info = list.map((d: any) =>
+    "Device ID: " + d.deviceId + "\n" +
+    "Device Name: " + d.deviceInfo?.alias + "\n" +
+    "Device Type: " + d.deviceInfo?.deviceType + "\n" +
+    "Model Name: " + d.deviceInfo?.modelName + "\n"
+  );
+  return "Found " + list.length + " devices:\n\n" + info.join("\n");
+}
+
+export function formatDeviceStatus(status: unknown): string {
+  return (
+    "Device status information is as follows.\n" +
+    "Please relay appropriately to the user.\n" +
+    "## Status Information\n" +
+    JSON.stringify(status, null, 2) +
+    "\n"
+  );
 }
 
 // --- MCP server ---------------------------------------------------------------
@@ -173,15 +204,8 @@ function buildServer(env: Env): McpServer {
 
   server.registerTool("get_device_list", { description: "Get the list of all ThinQ devices registered to the account, with device ID, name, type, and model.", inputSchema: z.object({}) }, async () => {
               try {
-                const devices = (await getDeviceList(env)) as any[];
-                const list = Array.isArray(devices) ? devices : [];
-                const info = list.map((d: any) =>
-                  "Device ID: " + d.deviceId + "\n" +
-                  "Device Name: " + d.deviceInfo?.alias + "\n" +
-                  "Device Type: " + d.deviceInfo?.deviceType + "\n" +
-                  "Model Name: " + d.deviceInfo?.modelName + "\n"
-                );
-                return text("Found " + list.length + " devices:\n\n" + info.join("\n"));
+                const devices = await getDeviceList(env);
+                return text(formatDeviceList(devices));
               } catch (e) {
                 return text("An error occurred while retrieving device list: " + String(e));
               }
@@ -221,8 +245,7 @@ function buildServer(env: Env): McpServer {
   server.registerTool("get_device_status", { description: "Retrieve the current status of a specific device.", inputSchema: z.object({ device_id: z.string().describe("Device ID from get_device_list") }) }, async ({ device_id }) => {
               try {
                 const status = await getDeviceStatus(env, device_id);
-                return text("Device status information is as follows.\n## Status Information\n" +
-                  JSON.stringify(status, null, 2));
+                return text(formatDeviceStatus(status));
               } catch (e) {
                 return text("An error occurred while retrieving device status: " + String(e));
               }

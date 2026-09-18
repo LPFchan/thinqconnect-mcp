@@ -33,6 +33,15 @@ thinqconnect-mcp = "thinqconnect_mcp.server:main"
 [project.urls]
 Homepage = "https://github.com/thinq-connect/thinqconnect-mcp"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["thinqconnect_mcp*"]

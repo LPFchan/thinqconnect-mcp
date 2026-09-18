@@ -54,6 +54,51 @@ binds `0.0.0.0` only inside its loopback-published Docker boundary.
 
 ![ThinQ Connect MCP Demo](demo.gif)
 
+## Tests
+
+Two suites, run separately, asserted against the same files:
+
+```sh
+npm test                                    # Worker  (vitest)
+cd python && .venv/bin/python -m pytest      # Python  (pytest)
+```
+
+The fixtures in `test/fixtures/` and the expected output in
+`test/fixtures/expected/` are shared by both suites. Each port formats the same
+fixture and is compared to the same golden bytes, so a change to one
+implementation's output fails that implementation's suite while the other keeps
+passing — which is what tells you the two have drifted apart.
+
+The Python suite imports only `thinqconnect_mcp.formatting`, which depends on
+nothing outside the standard library, so it runs without the `thinqconnect` SDK
+or any LG credentials. Create its environment with
+`cd python && uv venv .venv && uv pip install --python .venv/bin/python pytest`.
+
+## Worker/Python divergences
+
+The Worker is not a behavioral clone of the Python server. Two of the four
+tools produce matching output and are parity-tested; the other two were
+deliberately redefined, because the Python versions depend on the
+`thinqconnect` SDK's device classes, which have no equivalent on Workers.
+
+| Tool | Status |
+| --- | --- |
+| `get_device_list` | **Identical.** Parity-tested against a shared golden. |
+| `get_device_status` | **Identical.** Parity-tested. The status body is serialized as JSON on both sides — Python originally interpolated the dict with `str()`, which no JSON serializer can reproduce. |
+| `get_device_available_controls` | **Different.** Python builds a control-instruction guide, deriving writable properties and method signatures by introspecting an SDK device object. The Worker returns the raw profile JSON with a short preamble. |
+| `post_device_control` | **Different contract.** Python resolves `control_method` (e.g. `set_air_con_operation_mode`) to an SDK method and lets the SDK map it to the underlying property. The Worker ignores `control_method` and sends the camelCased `control_params` keys straight to the API, so those keys must already be real property names. A call that works against the Python server can send a different request against the Worker. |
+
+Two smaller differences are asserted in both suites so they stay visible:
+
+- **Whole-number floats.** Python renders `23.0`; `JSON.stringify` renders `23`.
+- **Malformed device entries.** A device missing `deviceInfo` makes Python raise
+  `AttributeError`, which its caller converts into an error string. The Worker
+  uses optional chaining and prints the literal `undefined`.
+
+Nothing here is covered by an end-to-end test against a live device. The
+`post_device_control` difference in particular can only be confirmed against
+real hardware.
+
 ## Table of Contents
 
 

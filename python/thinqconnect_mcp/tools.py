@@ -43,6 +43,8 @@ from thinqconnect import (
 )
 from thinqconnect.devices.connect_device import ConnectBaseDevice
 
+from .formatting import format_device_list, format_device_status
+
 logger = logging.getLogger(__name__)
 
 local_device_profiles = {}
@@ -93,16 +95,7 @@ async def get_device_list(thinq_api: ThinQApi) -> List[str]:
             local_device_lists = devices
         else:
             devices = local_device_lists
-        device_info = []
-        for device in devices:
-            device_info.append(
-                f"Device ID: {device.get('deviceId')}\n"
-                f"Device Name: {device.get('deviceInfo').get('alias')}\n"
-                f"Device Type: {device.get('deviceInfo').get('deviceType')}\n"
-                f"Model Name: {device.get('deviceInfo').get('modelName')}\n"
-            )
-        header = f"Found {len(devices)} devices:\n\n"
-        return header + "\n".join(device_info)
+        return format_device_list(devices)
 
     except Exception as e:
         return f"An error occurred while retrieving device list: {str(e)}"
@@ -322,10 +315,6 @@ async def get_device_status(thinq_api: ThinQApi, device_id: str) -> str:
     try:
         thinq_api._session = ClientSession()
         device_status = await thinq_api.async_get_device_status(device_id=device_id)
-        return f"""Device status information is as follows.
-Please relay appropriately to the user.
-## Status Information
-{device_status}
-"""
+        return format_device_status(device_status)
     except Exception as e:
         return f"An error occurred while retrieving device status: {str(e)}"
