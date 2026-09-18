@@ -8,29 +8,34 @@ control, and profile queries — via the LG ThinQ Connect Open API.
 ## Deployment: Cloudflare Worker (primary)
 
 The primary deployment is a Cloudflare Worker (`index.ts`), so the MCP
-endpoint stays up even when the OCI box is down. The Worker authenticates
-machine tokens and OAuth tokens directly against Common Auth
-(`https://auth.lost.plus`) with the `thinqconnect` scope, and calls the
-ThinQ Open API over HTTPS — no Python SDK in the request path.
+endpoint stays up even when the OCI box is down. It calls the ThinQ Open API
+over HTTPS — no Python SDK in the request path.
+
+It authenticates nobody. `thinq.lost.plus/mcp`, `/mcp/*`, `/healthz` and
+`/.well-known/oauth-protected-resource*` are served by the `auth-gateway`
+Worker, which validates the caller against Common Auth with the `thinqconnect`
+scope and reaches this route-less Worker over its `THINQCONNECT` service
+binding. That binding is the only way in.
 
 Deploy:
 
 ```bash
 npm install
 npx wrangler secret put THINQ_PAT   # LG ThinQ personal access token (secret, never in git)
-CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy \
-  --route 'thinq.lost.plus/mcp' --route 'thinq.lost.plus/mcp/*' \
-  --route 'thinq.lost.plus/healthz' \
-  --route 'thinq.lost.plus/.well-known/oauth-protected-resource*'
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy
 ```
 
-(The explicit `--route` flags are deliberate: wrangler 3.x ignores the
-`routes` table in `wrangler.toml` on deploy, so routes are passed on the
-command line. The table stays in the file as documentation.)
+No `--route` flags, and no `routes` table. This Worker must stay route-less:
+a request arriving straight off a route carries no gateway identity headers and
+is refused with a 500. Read the routes comment in `wrangler.toml` before adding
+any back.
 
-Configuration in `wrangler.toml`: `AUTH_URL`, `TOKEN_SCOPE`,
-`THINQ_COUNTRY` (e.g. `KR`). `THINQ_PAT` is a wrangler **secret** —
-never commit it.
+Configuration in `wrangler.toml`: `THINQ_COUNTRY` (e.g. `KR`). `AUTH_URL` and
+`TOKEN_SCOPE` are gone with the code that read them; the scope now lives in the
+gateway's route table at `auth/gateway/config/cloudflare.gateway.json`.
+`THINQ_PAT` is unaffected by that move — it is this Worker's credential to LG,
+not a caller's credential to this Worker — and remains a wrangler **secret**,
+never committed.
 
 ## Local development: Python server
 
@@ -44,11 +49,13 @@ The HTTP deployment uses the official MCP Python SDK v2 and supports the
 fallback for clients that still use `initialize`. Stdio remains available for
 local clients.
 
-The production HTTP endpoint is `https://thinq.lost.plus/mcp`. The shared
-Common Auth gateway protects it with the `thinqconnect` scope. Send a Common
-Auth token as `Authorization: Bearer <token>` or `X-API-Key: <token>`. The HTTP
-backend does not authenticate requests itself and must remain bound to localhost
-behind the gateway. Stdio clients are unaffected.
+The production HTTP endpoint is `https://thinq.lost.plus/mcp`, served by the
+Cloudflare Worker above rather than by this Python server. The shared Common
+Auth gateway protects it with the `thinqconnect` scope. Send a Common Auth token
+as `Authorization: Bearer <token>` or `X-API-Key: <token>`; `/healthz` answers
+`ok` as `text/plain`. A Python HTTP deployment does not authenticate requests
+itself and must remain bound to localhost behind a gateway. Stdio clients are
+unaffected.
 Standalone HTTP runs default to loopback; the production container explicitly
 binds `0.0.0.0` only inside its loopback-published Docker boundary.
 
