@@ -1,6 +1,6 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { identityFrom } from "@lost-plus/gateway-identity";
+import { identityFrom } from "@lpfchan/gateway-identity";
 import { buildControlPayload, ControlError, toCamel, writableProperties, type Json } from "./control";
 import {
   getDeviceList,
@@ -16,7 +16,7 @@ import {
 // A route-less backend behind the gateway Worker. It authenticates nobody:
 // the gateway has already asked auth.lost.plus who the caller is, and hands
 // the answer over in x-lost-plus-* headers, read by the shared
-// @lost-plus/gateway-identity parser. See the routes comment in wrangler.toml
+// @lpfchan/gateway-identity parser. See the routes comment in wrangler.toml
 // for why this Worker holds no route of its own.
 //
 // THINQ_PAT is this service's credential to LG, not a caller's credential to

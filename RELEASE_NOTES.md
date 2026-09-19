@@ -14,7 +14,7 @@
 - The Python server and its container tooling are removed from the repo, as
   is the upstream `demo.gif` (10 MB) and the identity-gated `GET /` document
   the gateway never routed. Identity headers are parsed by the shared
-  `@lost-plus/gateway-identity` package.
+  `@lpfchan/gateway-identity` package.
 
 ## 0.0.5 (2025-08-05)
 ### Updates
