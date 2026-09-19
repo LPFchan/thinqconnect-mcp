@@ -90,8 +90,12 @@ allow (`COMMAND_NOT_SUPPORTED_IN_POWER_OFF (2304)`).
 ```bash
 npm install
 npx wrangler secret put THINQ_PAT      # LG personal access token; a secret, never in git
-source /tmp/cfenv.sh && npm run deploy  # or CLOUDFLARE_API_TOKEN=... npx wrangler deploy
+npm run deploy                         # passage run --env CLOUDFLARE_API_TOKEN=infra/CF_MASTER_TOKEN -- wrangler deploy
 ```
+
+The deploy token comes from passage at deploy time (`infra` /
+`CF_MASTER_TOKEN`, through the `passage` setup module); an already-exported
+`CLOUDFLARE_API_TOKEN` wins if one is set.
 
 `THINQ_COUNTRY` is a plain var in `wrangler.toml` (default `KR`). The
 `x-api-key` the Open API requires is a public constant from the LG SDK and is
