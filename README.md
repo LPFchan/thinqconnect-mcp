@@ -31,7 +31,7 @@ client ──bearer──▶ auth-gateway (Worker, holds thinq.lost.plus routes)
   `/.well-known/oauth-protected-resource*`, and answers the last two itself.
 - **Authentication:** none here. The Worker reads the caller from the
   `x-lost-plus-*` headers with the shared
-  [`@lpfchan/gateway-identity`](https://github.com/LPFchan/gateway-identity)
+  [`@lpfchan/gateway-identity`](https://github.com/LPFchan/auth/tree/main/packages/gateway-identity)
   package and refuses, with a 500, any request that arrives without a
   complete one. It never sees a bearer token and never talks to
   `auth.lost.plus`.
