@@ -170,7 +170,7 @@ export interface ThinQRequest {
   conditionalControl?: boolean;
 }
 
-export async function thinqRequest(env: ThinQEnv, req: ThinQRequest, fetchFn: typeof fetch = fetch): Promise<unknown> {
+export async function thinqRequest(env: ThinQEnv, req: ThinQRequest): Promise<unknown> {
   const url = thinqBaseUrl(env.THINQ_COUNTRY) + "/" + req.endpoint;
   const headers: Record<string, string> = {
     authorization: "Bearer " + env.THINQ_PAT,
@@ -185,7 +185,7 @@ export async function thinqRequest(env: ThinQEnv, req: ThinQRequest, fetchFn: ty
 
   let resp: Response;
   try {
-    resp = await fetchFn(url, {
+    resp = await fetch(url, {
       method: req.method,
       headers,
       body: req.body === undefined ? undefined : JSON.stringify(req.body),
@@ -202,15 +202,14 @@ export async function thinqRequest(env: ThinQEnv, req: ThinQRequest, fetchFn: ty
   return unwrapThinqResponse(await resp.json());
 }
 
-export const getDeviceList = (env: ThinQEnv, f?: typeof fetch) =>
-  thinqRequest(env, { method: "GET", endpoint: "devices" }, f);
-export const getDeviceProfile = (env: ThinQEnv, id: string, f?: typeof fetch) =>
-  thinqRequest(env, { method: "GET", endpoint: "devices/" + encodeURIComponent(id) + "/profile" }, f);
-export const getDeviceStatus = (env: ThinQEnv, id: string, f?: typeof fetch) =>
-  thinqRequest(env, { method: "GET", endpoint: "devices/" + encodeURIComponent(id) + "/state" }, f);
-export const postDeviceControl = (env: ThinQEnv, id: string, payload: unknown, f?: typeof fetch) =>
+export const getDeviceList = (env: ThinQEnv) =>
+  thinqRequest(env, { method: "GET", endpoint: "devices" });
+export const getDeviceProfile = (env: ThinQEnv, id: string) =>
+  thinqRequest(env, { method: "GET", endpoint: "devices/" + encodeURIComponent(id) + "/profile" });
+export const getDeviceStatus = (env: ThinQEnv, id: string) =>
+  thinqRequest(env, { method: "GET", endpoint: "devices/" + encodeURIComponent(id) + "/state" });
+export const postDeviceControl = (env: ThinQEnv, id: string, payload: unknown) =>
   thinqRequest(
     env,
     { method: "POST", endpoint: "devices/" + encodeURIComponent(id) + "/control", body: payload, conditionalControl: true },
-    f,
   );

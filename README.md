@@ -30,9 +30,17 @@ client ──bearer──▶ auth-gateway (Worker, holds thinq.lost.plus routes)
   The gateway holds the zone routes for `/mcp`, `/mcp/*`, `/healthz` and
   `/.well-known/oauth-protected-resource*`, and answers the last two itself.
 - **Authentication:** none here. The Worker reads the caller from the
-  `x-lost-plus-*` headers (`identity.ts`) and refuses, with a 500, any request
-  that arrives without a complete one. It never sees a bearer token and never
-  talks to `auth.lost.plus`.
+  `x-lost-plus-*` headers with the shared
+  [`@lost-plus/gateway-identity`](https://github.com/LPFchan/gateway-identity)
+  package and refuses, with a 500, any request that arrives without a
+  complete one. It never sees a bearer token and never talks to
+  `auth.lost.plus`.
+- **Authorization:** the Common Auth hub's service registry marks
+  `thinqconnect` as `admin_only`, so the hub refuses a non-administrator's
+  token at admission and the gateway never forwards the request. That is
+  what makes `post_device_control` (and every other tool here) admin-only.
+  The Worker does not check `x-lost-plus-role` itself; if that registry flag
+  is ever cleared, every admitted user can control the appliances.
 - **State:** none. No D1, KV or R2. Each request builds a fresh MCP server; the
   only persistent thing is the `THINQ_PAT` secret.
 - **Upstream:** the ThinQ Open API region host for `THINQ_COUNTRY`, with the
@@ -53,7 +61,7 @@ Both MCP eras are served from one tool definition (`createMcpHandler`):
 | `get_device_list` | All devices on the account: id, name, type, model. |
 | `get_device_status` | Current state of one device, as JSON. |
 | `get_device_available_controls` | The device's writable properties with their accepted values and any selector (`unit`, `location`) they need, followed by the raw profile. Read this before controlling. |
-| `post_device_control` | Set one or more writable properties. `control_params` is `{ property: value }` (snake_case or camelCase), plus `unit`/`location` when the guide asks. |
+| `post_device_control` | Set one or more writable properties. `control_params` is `{ property: value }` (snake_case or camelCase), plus `unit`/`location` when the guide asks. Admin-only, enforced by the hub (see Authorization above). |
 
 ### How control works
 

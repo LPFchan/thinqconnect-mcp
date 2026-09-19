@@ -64,13 +64,13 @@ describe("identity gate", () => {
 
   it("refuses an identity without the encoding declaration", async () => {
     const { "x-lost-plus-encoding": _e, ...headers } = IDENTITY;
-    const res = await worker.fetch(new Request("https://thinq.lost.plus/", { headers }), env);
+    const res = await worker.fetch(new Request("https://thinq.lost.plus/mcp", { headers }), env);
     expect(res.status).toBe(500);
   });
 
   it("does not validate any credential of its own: a bearer token changes nothing", async () => {
     const res = await worker.fetch(
-      new Request("https://thinq.lost.plus/", { headers: { authorization: "Bearer anything" } }),
+      new Request("https://thinq.lost.plus/mcp", { headers: { authorization: "Bearer anything" } }),
       env,
     );
     expect(res.status).toBe(500);
@@ -80,16 +80,8 @@ describe("identity gate", () => {
 // --- routing ---------------------------------------------------------------------
 
 describe("routing", () => {
-  it("answers / with the caller's identity decoded", async () => {
-    const res = await worker.fetch(new Request("https://thinq.lost.plus/", { headers: IDENTITY }), env);
-    expect(res.status).toBe(200);
-    const body: any = await res.json();
-    expect(body.caller).toEqual({ sub: "42", email: "me@lost.plus", name: "사용자", role: "user" });
-    expect(body.tools).toEqual(["get_device_list", "get_device_available_controls", "post_device_control", "get_device_status"]);
-  });
-
-  it("serves /healthz and /.well-known from nowhere: those are the gateway's", async () => {
-    for (const path of ["/healthz", "/.well-known/oauth-protected-resource", "/other"]) {
+  it("serves only /mcp: `/`, /healthz and /.well-known are the gateway's or nobody's", async () => {
+    for (const path of ["/", "/healthz", "/.well-known/oauth-protected-resource", "/other"]) {
       const res = await worker.fetch(new Request("https://thinq.lost.plus" + path, { headers: IDENTITY }), env);
       expect(res.status, path).toBe(404);
     }

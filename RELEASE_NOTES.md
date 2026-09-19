@@ -11,7 +11,10 @@
   the device profile and validates values before sending. Earlier Worker
   builds sent a flat body the API does not accept.
 - ThinQ error codes and names are surfaced instead of a bare HTTP status.
-- The Python server and its container tooling are removed from the repo.
+- The Python server and its container tooling are removed from the repo, as
+  is the upstream `demo.gif` (10 MB) and the identity-gated `GET /` document
+  the gateway never routed. Identity headers are parsed by the shared
+  `@lost-plus/gateway-identity` package.
 
 ## 0.0.5 (2025-08-05)
 ### Updates

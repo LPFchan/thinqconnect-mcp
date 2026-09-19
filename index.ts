@@ -1,6 +1,6 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { identityFrom } from "./identity";
+import { identityFrom } from "@lost-plus/gateway-identity";
 import { buildControlPayload, ControlError, toCamel, writableProperties, type Json } from "./control";
 import {
   getDeviceList,
@@ -15,8 +15,9 @@ import {
 //
 // A route-less backend behind the gateway Worker. It authenticates nobody:
 // the gateway has already asked auth.lost.plus who the caller is, and hands
-// the answer over in x-lost-plus-* headers. See identity.ts, and the routes
-// comment in wrangler.toml for why this Worker holds no route of its own.
+// the answer over in x-lost-plus-* headers, read by the shared
+// @lost-plus/gateway-identity parser. See the routes comment in wrangler.toml
+// for why this Worker holds no route of its own.
 //
 // THINQ_PAT is this service's credential to LG, not a caller's credential to
 // this service. It is a Worker secret.
@@ -24,7 +25,6 @@ import {
 export type Env = ThinQEnv;
 
 export { messageId, thinqBaseUrl, unwrapThinqResponse } from "./thinq";
-export { toCamel } from "./control";
 
 // --- output formatters --------------------------------------------------------
 // These match the Python server's output byte for byte and are checked against
@@ -145,7 +145,7 @@ const WELCOME_PROMPT = [
 // before it can reach the URL path.
 const deviceId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/, "device_id must be the id from get_device_list").describe("Device ID from get_device_list");
 
-export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer {
+export function buildServer(env: Env): McpServer {
   const server = new McpServer(
     { name: "thinqconnect-mcp", version: "0.3.0" },
     {
@@ -167,7 +167,7 @@ export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer 
     },
     async () => {
       try {
-        return text(formatDeviceList(await getDeviceList(env, fetchFn)));
+        return text(formatDeviceList(await getDeviceList(env)));
       } catch (e) {
         return text("An error occurred while retrieving device list: " + String(e));
       }
@@ -185,7 +185,7 @@ export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer 
     },
     async ({ device_type, device_id }) => {
       try {
-        const profile = (await getDeviceProfile(env, device_id, fetchFn)) as Json;
+        const profile = (await getDeviceProfile(env, device_id)) as Json;
         return text(formatControlGuide(device_type, device_id, profile));
       } catch (e) {
         return text("An error occurred while retrieving device details: " + String(e));
@@ -208,7 +208,7 @@ export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer 
     async ({ device_id, control_method, control_params }) => {
       const label = (control_method ? "Command: " + control_method + ", " : "") + "Parameters: " + JSON.stringify(control_params);
       try {
-        const profile = (await getDeviceProfile(env, device_id, fetchFn)) as Json;
+        const profile = (await getDeviceProfile(env, device_id)) as Json;
         let plan;
         try {
           plan = buildControlPayload(profile, control_params);
@@ -217,7 +217,7 @@ export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer 
           if (legacy === null) throw e;
           plan = buildControlPayload(profile, legacy);
         }
-        await postDeviceControl(env, device_id, plan.payload, fetchFn);
+        await postDeviceControl(env, device_id, plan.payload);
         return text(
           "Device control completed. Please relay appropriately to the user. " + label +
           ", Sent: " + JSON.stringify(plan.payload),
@@ -236,7 +236,7 @@ export function buildServer(env: Env, fetchFn: typeof fetch = fetch): McpServer 
     },
     async ({ device_id }) => {
       try {
-        return text(formatDeviceStatus(await getDeviceStatus(env, device_id, fetchFn)));
+        return text(formatDeviceStatus(await getDeviceStatus(env, device_id)));
       } catch (e) {
         return text("An error occurred while retrieving device status: " + String(e));
       }
@@ -284,22 +284,14 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // Before routing, not after. There is no path here that serves without an
     // identity, so there is no reason for one to be reachable before the check.
-    const identity = identityFrom(request.headers);
-    if (identity === null) return refused();
+    if (identityFrom(request.headers) === null) return refused();
 
     const url = new URL(request.url);
 
-    // /healthz and /.well-known/oauth-protected-resource are the gateway's.
-    if (url.pathname === "/" || url.pathname === "") {
-      return Response.json({
-        name: "thinqconnect-mcp",
-        runtime: "cloudflare-workers",
-        mcp_path: "/mcp",
-        caller: { sub: identity.sub, email: identity.email, name: identity.name, role: identity.role },
-        tools: ["get_device_list", "get_device_available_controls", "post_device_control", "get_device_status"],
-      });
-    }
-
+    // Only /mcp. /healthz and /.well-known/oauth-protected-resource are the
+    // gateway's, and `/` never arrives here because the gateway does not
+    // route it.
+    //
     // `/mcp/*` as well as `/mcp`. The gateway's route for this host has no
     // path_prefix, so both arrive here.
     if (url.pathname !== "/mcp" && !url.pathname.startsWith("/mcp/")) {
